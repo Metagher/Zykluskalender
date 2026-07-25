@@ -127,6 +127,22 @@ body {
   font-size: 18px; color: var(--rose-deep); cursor: pointer; transition: background 0.2s;
 }
 .calendar-nav button:hover { background: var(--peach); }
+.today-btn {
+  display: block;
+  margin: 0 auto 14px;
+  padding: 6px 16px;
+  border: 1.5px solid var(--rose);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--rose-deep);
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.today-btn:hover { background: var(--rose); color: #fff; }
+
 .legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 14px; font-size: 12px; color: var(--ink-soft); }
 .legend-item { display: flex; align-items: center; gap: 5px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
@@ -251,6 +267,8 @@ body {
         <h2 id="monthLabel">–</h2>
         <button id="nextMonth" aria-label="Nächster Monat">›</button>
       </div>
+
+      <button id="todayBtn" class="today-btn">Heute</button>
 
       <div class="legend">
         <span class="legend-item"><i class="dot period"></i> Periode</span>
@@ -427,38 +445,76 @@ body {
     return blocks;
   }
 
-  function computeCycleStats() {
+  // Builds a running model: every logged period start becomes its own
+  // "cycle" entry. A cycle between two logged periods uses the REAL observed
+  // length; the newest (still open) cycle and a few cycles beyond it are
+  // PROJECTED from the average. Nothing here ever deletes or overwrites a
+  // logged period day — this only reads from periodDates and derives windows.
+  const FUTURE_CYCLES_TO_PROJECT = 6;
+
+  function buildCycleModel() {
     const blocks = getPeriodBlocks();
     const starts = blocks.map(b => b.start);
 
-    let cycleLengths = [];
-    for (let i = 1; i < starts.length; i++) cycleLengths.push(diffDays(starts[i], starts[i-1]));
-    cycleLengths = cycleLengths.filter(n => n >= 18 && n <= 45);
-
-    const avgLength = cycleLengths.length
-      ? Math.round(cycleLengths.reduce((a,b) => a+b, 0) / cycleLengths.length)
+    let observedLengths = [];
+    for (let i = 1; i < starts.length; i++) observedLengths.push(diffDays(starts[i], starts[i-1]));
+    const plausible = observedLengths.filter(n => n >= 18 && n <= 45);
+    const avgLength = plausible.length
+      ? Math.round(plausible.reduce((a,b) => a+b, 0) / plausible.length)
       : 28;
+    const hasEnoughData = plausible.length >= 1;
+
+    // One cycle per logged period start
+    const cycles = [];
+    for (let i = 0; i < starts.length; i++) {
+      const cycleStart = starts[i];
+      const actualNextStart = starts[i+1] || null;
+      let length = avgLength;
+      let isPredicted = true;
+      if (actualNextStart) {
+        const realLength = diffDays(actualNextStart, cycleStart);
+        if (realLength >= 18 && realLength <= 45) { length = realLength; isPredicted = false; }
+      }
+      const nextStart = actualNextStart || addDays(cycleStart, length);
+      const ovulationDay = addDays(nextStart, -14);
+      cycles.push({
+        cycleStart, nextStart, ovulationDay,
+        fertileStart: addDays(ovulationDay, -5),
+        fertileEnd: addDays(ovulationDay, 1),
+        isPredicted,
+      });
+    }
+
+    // Keep projecting further cycles into the future from the average,
+    // so the calendar has upcoming fertile windows to show even before
+    // the next real period is logged.
+    let cursor = cycles.length ? cycles[cycles.length - 1].nextStart : null;
+    for (let k = 0; k < FUTURE_CYCLES_TO_PROJECT && cursor; k++) {
+      const cycleStart = cursor;
+      const nextStart = addDays(cycleStart, avgLength);
+      const ovulationDay = addDays(nextStart, -14);
+      cycles.push({
+        cycleStart, nextStart, ovulationDay,
+        fertileStart: addDays(ovulationDay, -5),
+        fertileEnd: addDays(ovulationDay, 1),
+        isPredicted: true,
+      });
+      cursor = nextStart;
+    }
 
     const lastStart = starts.length ? starts[starts.length - 1] : null;
-    const hasAnyData = starts.length >= 1;
-
-    let nextPeriodStart = null, ovulationDay = null, fertileStart = null, fertileEnd = null, currentCycleDay = null;
-
-    if (hasAnyData) {
-      nextPeriodStart = addDays(lastStart, avgLength);
-      ovulationDay = addDays(nextPeriodStart, -14);
-      fertileStart = addDays(ovulationDay, -5);
-      fertileEnd = addDays(ovulationDay, 1);
-
-      const today = new Date();
-      currentCycleDay = diffDays(today, lastStart) + 1;
+    let currentCycleDay = null;
+    if (lastStart) {
+      currentCycleDay = diffDays(new Date(), lastStart) + 1;
       if (currentCycleDay < 1) currentCycleDay = null;
     }
 
-    return {
-      avgLength, lastStart, nextPeriodStart, ovulationDay, fertileStart, fertileEnd,
-      currentCycleDay, hasEnoughData: starts.length >= 2,
-    };
+    // The cycle relevant for the stat cards: the first one whose fertile
+    // window hasn't fully passed yet (falls back to the most recent one).
+    const today = new Date();
+    const upcoming = cycles.find(c => c.fertileEnd >= today) || cycles[cycles.length - 1] || null;
+
+    return { cycles, avgLength, hasEnoughData, currentCycleDay, upcoming };
   }
 
   // -----------------------------
@@ -467,38 +523,38 @@ body {
   const MONTH_NAMES = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
 
   function render() {
-    const stats = computeCycleStats();
-    renderStats(stats);
-    renderMoon(stats);
-    renderCalendar(stats);
+    const model = buildCycleModel();
+    renderStats(model);
+    renderMoon(model);
+    renderCalendar(model);
   }
 
-  function renderStats(stats) {
-    document.getElementById("statCycleDay").textContent = stats.currentCycleDay ? `Tag ${stats.currentCycleDay}` : "–";
-    document.getElementById("statAvgLength").textContent = stats.hasEnoughData ? `${stats.avgLength} Tage` : "noch offen";
-    document.getElementById("statNextPeriod").textContent = stats.nextPeriodStart ? formatShortDate(stats.nextPeriodStart) : "noch offen";
-    document.getElementById("statFertile").textContent = (stats.fertileStart && stats.fertileEnd)
-      ? `${formatShortDate(stats.fertileStart)} – ${formatShortDate(stats.fertileEnd)}` : "noch offen";
+  function renderStats(model) {
+    document.getElementById("statCycleDay").textContent = model.currentCycleDay ? `Tag ${model.currentCycleDay}` : "–";
+    document.getElementById("statAvgLength").textContent = model.hasEnoughData ? `${model.avgLength} Tage` : "noch offen";
+    document.getElementById("statNextPeriod").textContent = model.upcoming ? formatShortDate(model.upcoming.nextStart) : "noch offen";
+    document.getElementById("statFertile").textContent = model.upcoming
+      ? `${formatShortDate(model.upcoming.fertileStart)} – ${formatShortDate(model.upcoming.fertileEnd)}` : "noch offen";
   }
 
   function formatShortDate(d) { return `${d.getDate()}. ${MONTH_NAMES[d.getMonth()].slice(0,3)}`; }
 
-  function renderMoon(stats) {
+  function renderMoon(model) {
     const circle = document.getElementById("moonFillCircle");
     const text = document.getElementById("moonDayText");
     const r = 26;
     const circumference = 2 * Math.PI * r;
-    if (stats.currentCycleDay && stats.avgLength) {
-      const progress = Math.min(stats.currentCycleDay / stats.avgLength, 1);
+    if (model.currentCycleDay && model.avgLength) {
+      const progress = Math.min(model.currentCycleDay / model.avgLength, 1);
       circle.setAttribute("stroke-dasharray", `${circumference * progress} ${circumference}`);
-      text.textContent = stats.currentCycleDay;
+      text.textContent = model.currentCycleDay;
     } else {
       circle.setAttribute("stroke-dasharray", `0 ${circumference}`);
       text.textContent = "–";
     }
   }
 
-  function renderCalendar(stats) {
+  function renderCalendar(model) {
     document.getElementById("monthLabel").textContent = `${MONTH_NAMES[viewMonth]} ${viewYear}`;
     const grid = document.getElementById("calendarGrid");
     grid.innerHTML = "";
@@ -507,12 +563,16 @@ body {
     const startOffset = mondayFirst(firstOfMonth.getDay());
     const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
 
+    // Fertile windows and ovulation days from EVERY cycle (past, current,
+    // and projected future ones), so browsing any month shows the right
+    // markers — not just the single most recent prediction.
     const fertileSet = new Set();
-    if (stats.fertileStart && stats.fertileEnd) {
-      let d = new Date(stats.fertileStart);
-      while (d <= stats.fertileEnd) { fertileSet.add(toISO(d)); d = addDays(d, 1); }
+    const ovulationSet = new Set();
+    for (const c of model.cycles) {
+      let d = new Date(c.fertileStart);
+      while (d <= c.fertileEnd) { fertileSet.add(toISO(d)); d = addDays(d, 1); }
+      ovulationSet.add(toISO(c.ovulationDay));
     }
-    const ovulationStr = stats.ovulationDay ? toISO(stats.ovulationDay) : null;
     const todayS = todayStr();
 
     for (let i = 0; i < startOffset; i++) {
@@ -528,7 +588,7 @@ body {
       cell.className = "day-cell";
       cell.textContent = day;
       if (fertileSet.has(dateStr)) cell.classList.add("fertile");
-      if (dateStr === ovulationStr) cell.classList.add("ovulation");
+      if (ovulationSet.has(dateStr)) cell.classList.add("ovulation");
       if (periodDates.has(dateStr)) cell.classList.add("period");
       if (dateStr === todayS) cell.classList.add("today");
       cell.addEventListener("click", () => togglePeriodDay(dateStr));
@@ -541,6 +601,12 @@ body {
   });
   document.getElementById("nextMonth").addEventListener("click", () => {
     viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } render();
+  });
+  document.getElementById("todayBtn").addEventListener("click", () => {
+    const now = new Date();
+    viewYear = now.getFullYear();
+    viewMonth = now.getMonth();
+    render();
   });
 
   // -----------------------------
