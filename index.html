@@ -17,6 +17,7 @@
   --rose-deep: #C16A82;
   --peach: #F3C9A6;
   --period: #B8677D;
+  --gold: #C89344;
   --line: #EEDFDA;
   --today-ring: #8FAE9A;
   --font-display: "Fraunces", serif;
@@ -131,7 +132,7 @@ body {
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .dot.period { background: var(--period); }
 .dot.fertile { background: var(--peach); }
-.dot.ovulation { background: var(--rose-deep); border: 2px solid #fff; box-shadow: 0 0 0 1.5px var(--rose-deep); }
+.dot.ovulation { background: var(--peach); border: 2px solid var(--gold); box-shadow: 0 0 0 1.5px var(--gold) inset; }
 .dot.today { background: transparent; border: 2px solid var(--today-ring); }
 .weekday-row {
   display: grid; grid-template-columns: repeat(7, 1fr); text-align: center;
@@ -146,8 +147,29 @@ body {
 .day-cell:hover { transform: scale(1.06); }
 .day-cell.empty { cursor: default; visibility: hidden; }
 .day-cell.fertile { background: var(--peach); }
-.day-cell.ovulation { background: var(--rose-deep); color: #fff; font-weight: 700; }
+.day-cell.ovulation {
+  background: var(--peach);
+  color: var(--ink);
+  font-weight: 800;
+  border: 2.5px solid var(--gold);
+}
+.day-cell.ovulation::after {
+  content: "";
+  position: absolute;
+  bottom: 14%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--gold);
+}
 .day-cell.period { background: var(--period); color: #fff; font-weight: 700; }
+/* A day can be both the period start/end AND (rarely) flagged as ovulation-adjacent;
+   period styling always wins visually since it's the more specific, logged fact. */
+.day-cell.period.ovulation {
+  background: var(--period);
+  color: #fff;
+  border: 2.5px solid var(--gold);
+}
 .day-cell.today { box-shadow: 0 0 0 2px var(--today-ring); font-weight: 800; }
 .hint { margin: 14px 2px 0; font-size: 12px; color: var(--ink-soft); text-align: center; }
 .app-footer { margin-top: 22px; text-align: center; }
