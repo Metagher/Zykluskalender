@@ -159,6 +159,7 @@ body {
   position: relative; aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
   border-radius: 40% 60% 55% 45% / 50% 45% 55% 50%; font-size: 14px; cursor: pointer;
   transition: transform 0.15s ease, background 0.2s ease; color: var(--ink);
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
 }
 .day-cell:hover { transform: scale(1.06); }
 .day-cell.empty { cursor: default; visibility: hidden; }
@@ -193,15 +194,11 @@ body {
   right: 4px;
   font-size: 11px;
   line-height: 1;
-  cursor: pointer;
-  color: rgba(74,50,56,0.25);
-  transition: color 0.15s, transform 0.15s;
+  pointer-events: none;
+  color: var(--rose-deep);
   z-index: 2;
 }
-.day-heart:hover { transform: scale(1.3); }
-.day-heart.active { color: var(--rose-deep); }
-.day-cell.period .day-heart { color: rgba(255,255,255,0.4); }
-.day-cell.period .day-heart.active { color: #fff; }
+.day-cell.period .day-heart { color: #fff; }
 .legend-item .heart-mark { color: var(--rose-deep); font-size: 12px; }
 .hint { margin: 14px 2px 0; font-size: 12px; color: var(--ink-soft); text-align: center; }
 .app-footer { margin-top: 22px; text-align: center; }
@@ -300,7 +297,7 @@ body {
 
       <div class="calendar-grid" id="calendarGrid"></div>
 
-      <p class="hint">Tippe auf einen Tag, um ihn als Periodentag zu markieren oder zu entfernen. Tippe auf das Herz oben rechts in der Zelle, um "Liebe gemacht" zu markieren.</p>
+      <p class="hint">Tippe auf einen Tag, um ihn als Periodentag zu markieren oder zu entfernen. Lange gedrückt halten, um "Liebe gemacht" (♥) zu markieren oder zu entfernen.</p>
     </section>
 
     <footer class="app-footer">
@@ -322,6 +319,7 @@ body {
   const LS_ANON_KEY = "bluetezeit_supabase_anon";
   const TABLE = "period_days";
   const TABLE_LOVE = "love_days";
+  const LONG_PRESS_MS = 450;
 
   let supabaseClient = null;
   let periodDates = new Set();
@@ -643,17 +641,34 @@ body {
       if (ovulationSet.has(dateStr)) cell.classList.add("ovulation");
       if (periodDates.has(dateStr)) cell.classList.add("period");
       if (dateStr === todayS) cell.classList.add("today");
-      cell.addEventListener("click", () => togglePeriodDay(dateStr));
 
-      const heart = document.createElement("span");
-      heart.className = "day-heart" + (loveDates.has(dateStr) ? " active" : "");
-      heart.textContent = "♥";
-      heart.title = "Liebe gemacht markieren";
-      heart.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleLoveDay(dateStr);
+      if (loveDates.has(dateStr)) {
+        const heart = document.createElement("span");
+        heart.className = "day-heart";
+        heart.textContent = "♥";
+        cell.appendChild(heart);
+      }
+
+      // Kurzer Tap markiert die Periode; langes Drücken (Touch & Maus)
+      // markiert stattdessen "Liebe gemacht", damit sich beide Aktionen
+      // nicht gegenseitig auf derselben kleinen Zelle in die Quere kommen.
+      let pressTimer = null;
+      let longPressFired = false;
+      cell.addEventListener("pointerdown", () => {
+        longPressFired = false;
+        pressTimer = setTimeout(() => {
+          longPressFired = true;
+          toggleLoveDay(dateStr);
+        }, LONG_PRESS_MS);
       });
-      cell.appendChild(heart);
+      cell.addEventListener("pointerup", () => clearTimeout(pressTimer));
+      cell.addEventListener("pointerleave", () => clearTimeout(pressTimer));
+      cell.addEventListener("pointercancel", () => clearTimeout(pressTimer));
+      cell.addEventListener("contextmenu", (e) => e.preventDefault());
+      cell.addEventListener("click", () => {
+        if (longPressFired) { longPressFired = false; return; }
+        togglePeriodDay(dateStr);
+      });
 
       grid.appendChild(cell);
     }
