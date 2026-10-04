@@ -149,6 +149,7 @@ body {
 .dot.period { background: var(--period); }
 .dot.fertile { background: var(--peach); }
 .dot.ovulation { background: var(--peach); border: 2px solid var(--gold); box-shadow: 0 0 0 1.5px var(--gold) inset; }
+.dot.predicted-period { background: transparent; border: 2px dashed var(--period); }
 .dot.today { background: transparent; border: 2px solid var(--today-ring); }
 .weekday-row {
   display: grid; grid-template-columns: repeat(7, 1fr); text-align: center;
@@ -187,6 +188,7 @@ body {
   color: #fff;
   border: 2.5px solid var(--gold);
 }
+.day-cell.predicted-period { border: 2px dashed var(--period); color: var(--period); font-weight: 700; }
 .day-cell.today { box-shadow: 0 0 0 2px var(--today-ring); font-weight: 800; }
 .day-heart {
   position: absolute;
@@ -285,6 +287,7 @@ body {
 
       <div class="legend">
         <span class="legend-item"><i class="dot period"></i> Periode</span>
+        <span class="legend-item"><i class="dot predicted-period"></i> Periode (erwartet)</span>
         <span class="legend-item"><i class="dot fertile"></i> Fruchtbares Fenster</span>
         <span class="legend-item"><i class="dot ovulation"></i> Eisprung (geschätzt)</span>
         <span class="legend-item"><i class="dot today"></i> Heute</span>
@@ -331,6 +334,9 @@ body {
   function parseISO(s) { const [y,m,d] = s.split("-").map(Number); return new Date(y, m-1, d); }
   function addDays(date, n) { const d = new Date(date); d.setDate(d.getDate()+n); return d; }
   function diffDays(a, b) { return Math.round((a - b) / 86400000); }
+  // Heute 00:00 Uhr. Ohne Normalisierung rundet diffDays ab 12 Uhr mittags
+  // auf, der Zyklustag springt dann abends einen Tag zu weit.
+  function startOfToday() { const d = new Date(); d.setHours(0,0,0,0); return d; }
   const mondayFirst = (jsDay) => (jsDay === 0 ? 6 : jsDay - 1);
 
   // -----------------------------
@@ -513,6 +519,9 @@ body {
       ? Math.round(plausible.reduce((a,b) => a+b, 0) / plausible.length)
       : 28;
     const hasEnoughData = plausible.length >= 1;
+    const avgPeriodLength = blocks.length
+      ? Math.round(blocks.reduce((a,b) => a + diffDays(b.end, b.start) + 1, 0) / blocks.length)
+      : 5;
 
     // One cycle per logged period start
     const cycles = [];
@@ -552,19 +561,37 @@ body {
       cursor = nextStart;
     }
 
+    const today = startOfToday();
     const lastStart = starts.length ? starts[starts.length - 1] : null;
     let currentCycleDay = null;
     if (lastStart) {
-      currentCycleDay = diffDays(new Date(), lastStart) + 1;
+      currentCycleDay = diffDays(today, lastStart) + 1;
       if (currentCycleDay < 1) currentCycleDay = null;
     }
 
-    // The cycle relevant for the stat cards: the first one whose fertile
-    // window hasn't fully passed yet (falls back to the most recent one).
-    const today = new Date();
-    const upcoming = cycles.find(c => c.fertileEnd >= today) || cycles[cycles.length - 1] || null;
+    // Nächste Periode: immer das Ende des aktuell laufenden Zyklus (letzter
+    // eingetragener Beginn + Ø Länge). Früher wurde sie aus dem nächsten noch
+    // nicht vergangenen fruchtbaren Fenster abgeleitet und sprang dadurch ab
+    // dem Eisprung einen ganzen Zyklus zu weit.
+    const currentCycle = lastStart ? cycles[starts.length - 1] : null;
+    const nextPeriod = currentCycle ? currentCycle.nextStart : null;
+    const overdueDays = nextPeriod && nextPeriod < today ? diffDays(today, nextPeriod) : 0;
 
-    return { cycles, avgLength, hasEnoughData, currentCycleDay, upcoming };
+    // Fruchtbares Fenster: das erste, das noch nicht vorbei ist.
+    const upcomingFertile = cycles.find(c => c.fertileEnd >= today) || null;
+
+    // Erwartete Periodentage (nur Zukunft), damit im Kalender sichtbar ist,
+    // auf welchem prognostizierten Periodenbeginn ein Fenster basiert.
+    const predictedPeriodSet = new Set();
+    for (const c of cycles) {
+      if (!lastStart || c.nextStart <= lastStart || starts.some(s => +s === +c.nextStart)) continue;
+      for (let i = 0; i < avgPeriodLength; i++) {
+        const d = addDays(c.nextStart, i);
+        if (d >= today) predictedPeriodSet.add(toISO(d));
+      }
+    }
+
+    return { cycles, avgLength, hasEnoughData, currentCycleDay, nextPeriod, overdueDays, upcomingFertile, predictedPeriodSet };
   }
 
   // -----------------------------
@@ -582,9 +609,12 @@ body {
   function renderStats(model) {
     document.getElementById("statCycleDay").textContent = model.currentCycleDay ? `Tag ${model.currentCycleDay}` : "–";
     document.getElementById("statAvgLength").textContent = model.hasEnoughData ? `${model.avgLength} Tage` : "noch offen";
-    document.getElementById("statNextPeriod").textContent = model.upcoming ? formatShortDate(model.upcoming.nextStart) : "noch offen";
-    document.getElementById("statFertile").textContent = model.upcoming
-      ? `${formatShortDate(model.upcoming.fertileStart)} – ${formatShortDate(model.upcoming.fertileEnd)}` : "noch offen";
+    document.getElementById("statNextPeriod").textContent = !model.nextPeriod ? "noch offen"
+      : model.overdueDays ? `${formatShortDate(model.nextPeriod)} (+${model.overdueDays} Tg.)`
+      : formatShortDate(model.nextPeriod);
+    const f = model.upcomingFertile;
+    document.getElementById("statFertile").textContent = f
+      ? `${formatShortDate(f.fertileStart)} – ${formatShortDate(f.fertileEnd)}` : "noch offen";
   }
 
   function formatShortDate(d) { return `${d.getDate()}. ${MONTH_NAMES[d.getMonth()].slice(0,3)}`; }
@@ -640,6 +670,7 @@ body {
       if (fertileSet.has(dateStr)) cell.classList.add("fertile");
       if (ovulationSet.has(dateStr)) cell.classList.add("ovulation");
       if (periodDates.has(dateStr)) cell.classList.add("period");
+      else if (model.predictedPeriodSet.has(dateStr)) cell.classList.add("predicted-period");
       if (dateStr === todayS) cell.classList.add("today");
 
       if (loveDates.has(dateStr)) {
